@@ -27,7 +27,6 @@ services:
 
   mongo:
     image: mongo:7
-    container_name: employee-mongodb
     ports:
       - "27017:27017"
     volumes:
