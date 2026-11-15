@@ -6,20 +6,15 @@ pipeline {
         timestamps()
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '10'))
+        skipDefaultCheckout(true)
     }
 
     environment {
         AWS_REGION = 'ap-southeast-2'
-
         S3_BUCKET = 'amazon-bucket01373937'
-
         CLOUDFRONT_DISTRIBUTION_ID = 'E3BQUTRS15UI7H'
-
         CLOUDFRONT_URL = 'https://d34mt4khwup663.cloudfront.net'
-
         AWS_CREDENTIALS_ID = 'Aws-creditentials'
-
-        FRONTEND_DIR = 'frontend'
     }
 
     stages {
@@ -34,10 +29,26 @@ pipeline {
         stage('Validate Environment') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
+
+                    echo "===== BUILD ENVIRONMENT ====="
+
+                    echo "Node.js:"
                     node --version
+                    which node
+
+                    echo "npm:"
                     npm --version
+                    which npm
+
+                    echo "AWS CLI:"
                     aws --version
+                    which aws
+
+                    echo "Git:"
+                    git --version
+
+                    echo "Environment validation successful"
                 '''
             }
         }
@@ -45,7 +56,10 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 dir('frontend') {
-                    sh 'npm ci'
+                    sh '''
+                        set -eu
+                        npm ci
+                    '''
                 }
             }
         }
@@ -53,7 +67,10 @@ pipeline {
         stage('Code Quality') {
             steps {
                 dir('frontend') {
-                    sh 'npm run lint'
+                    sh '''
+                        set -eu
+                        npm run lint
+                    '''
                 }
             }
         }
@@ -61,7 +78,10 @@ pipeline {
         stage('Build Frontend') {
             steps {
                 dir('frontend') {
-                    sh 'npm run build'
+                    sh '''
+                        set -eu
+                        npm run build
+                    '''
                 }
             }
         }
@@ -69,14 +89,16 @@ pipeline {
         stage('Validate Build Artifacts') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
-                    test -d frontend/dist
+                    echo "Validating production build..."
+
                     test -s frontend/dist/index.html
 
                     echo "Production build verified"
 
                     du -sh frontend/dist
+                    find frontend/dist -maxdepth 2 -type f
                 '''
             }
         }
@@ -88,12 +110,41 @@ pipeline {
                     credentialsId: "${AWS_CREDENTIALS_ID}"
                 ]]) {
                     sh '''
-                        set -e
+                        set -eu
+
+                        echo "Verifying AWS identity..."
 
                         aws sts get-caller-identity \
                             --region "$AWS_REGION"
 
                         echo "AWS authentication successful"
+                    '''
+                }
+            }
+        }
+
+        stage('Verify AWS Resources') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: "${AWS_CREDENTIALS_ID}"
+                ]]) {
+                    sh '''
+                        set -eu
+
+                        echo "Checking S3 bucket..."
+
+                        aws s3api get-bucket-location \
+                            --bucket "$S3_BUCKET"
+
+                        echo "Checking CloudFront distribution..."
+
+                        aws cloudfront get-distribution \
+                            --id "$CLOUDFRONT_DISTRIBUTION_ID" \
+                            --query 'Distribution.Status' \
+                            --output text
+
+                        echo "AWS resources verified"
                     '''
                 }
             }
@@ -106,9 +157,9 @@ pipeline {
                     credentialsId: "${AWS_CREDENTIALS_ID}"
                 ]]) {
                     sh '''
-                        set -e
+                        set -eu
 
-                        echo "Deploying frontend to S3..."
+                        echo "Deploying React frontend to S3..."
 
                         aws s3 sync frontend/dist/ \
                             "s3://${S3_BUCKET}/" \
@@ -135,7 +186,9 @@ pipeline {
                     credentialsId: "${AWS_CREDENTIALS_ID}"
                 ]]) {
                     sh '''
-                        set -e
+                        set -eu
+
+                        echo "Creating CloudFront invalidation..."
 
                         INVALIDATION_ID=$(aws cloudfront create-invalidation \
                             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
@@ -144,6 +197,8 @@ pipeline {
                             --output text)
 
                         echo "Invalidation ID: $INVALIDATION_ID"
+
+                        echo "Waiting for invalidation completion..."
 
                         aws cloudfront wait invalidation-completed \
                             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
@@ -158,15 +213,15 @@ pipeline {
         stage('Smoke Test') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
                     echo "Testing CloudFront URL..."
 
                     curl --retry 5 \
-                         --retry-delay 5 \
-                         --retry-all-errors \
-                         -fsS "${CLOUDFRONT_URL}/" \
-                         -o /dev/null
+                        --retry-delay 5 \
+                        --retry-all-errors \
+                        -fsS "${CLOUDFRONT_URL}/" \
+                        -o /dev/null
 
                     echo "Frontend deployment verified"
                 '''
